@@ -31,10 +31,11 @@ const orderedDither = (imageData: ImageData, w: number, h: number, matrix: numbe
   for (let y = 0; y < h; y++) {
     for (let x = 0; x < w; x++) {
       const i = (y * w + x) * 4;
+      const originalAlpha = d[i + 3];
       const threshold = ((matrix[y % mH][x % mW] + 0.5) * 255) / n2;
       const v = d[i] > threshold ? 255 : 0;
       d[i] = d[i + 1] = d[i + 2] = v;
-      d[i + 3] = 255;
+      d[i + 3] = originalAlpha;
     }
   }
   return imageData;
@@ -47,10 +48,11 @@ const diffuse = (imageData: ImageData, w: number, h: number, kernel: DiffusionKe
     for (let x = 0; x < w; x++) {
       const i = (y * w + x) * 4;
       const oldP = d[i];
+      const originalAlpha = d[i + 3];
       const newP = oldP > 128 ? 255 : 0;
       const err = oldP - newP;
       d[i] = d[i + 1] = d[i + 2] = newP;
-      d[i + 3] = 255;
+      d[i + 3] = originalAlpha;
       for (const k of kernel) {
         const nx = x + k.x;
         const ny = y + k.y;
@@ -82,9 +84,10 @@ const Dithering = {
     const d = imageData.data;
     for (let i = 0; i < d.length; i += 4) {
       const y = d[i];
+      const originalAlpha = d[i + 3];
       const value = y > threshold ? 255 : 0;
       d[i] = d[i + 1] = d[i + 2] = value;
-      d[i + 3] = 255;
+      d[i + 3] = originalAlpha;
     }
     return imageData;
   },
@@ -211,7 +214,12 @@ function App() {
   const [size, setSize] = useState<number>(46);
   const [threshold, setThreshold] = useState<number>(46);
   const [ditheringMethod, setDitheringMethod] = useState<string>('BITMAP');
+  const [zoom, setZoom] = useState<number>(1);
+  const [pan, setPan] = useState({ x: 0, y: 0 });
+  const [isDragging, setIsDragging] = useState(false);
+  const [dragStart, setDragStart] = useState({ x: 0, y: 0 });
   const canvasRef = useRef<HTMLCanvasElement>(null);
+  const containerRef = useRef<HTMLDivElement>(null);
   const imageRef = useRef<HTMLImageElement>(new Image());
 
   const handleImageUpload = (event: React.ChangeEvent<HTMLInputElement>) => {
@@ -221,6 +229,8 @@ function App() {
         const result = e.target?.result;
         if (typeof result === 'string') {
           setImageSrc(result);
+          setZoom(1);
+          setPan({ x: 0, y: 0 });
         }
       };
       reader.readAsDataURL(event.target.files[0]);
@@ -230,83 +240,111 @@ function App() {
   useEffect(() => {
     const canvas = canvasRef.current;
     const context = canvas?.getContext('2d');
-    if (!canvas || !context) return;
+    if (!canvas || !context || !imageSrc) return;
 
-    if (imageSrc) {
-      imageRef.current.crossOrigin = 'Anonymous';
-      imageRef.current.src = imageSrc;
-      imageRef.current.onload = () => {
-        const img = imageRef.current;
-
-        const scale = size / 100;
-        const canvasWidth = Math.max(1, Math.floor(img.width * scale));
-        const canvasHeight = Math.max(1, Math.floor(img.height * scale));
-
-        canvas.width = canvasWidth;
-        canvas.height = canvasHeight;
-
-        context.imageSmoothingEnabled = false;
-        context.drawImage(img, 0, 0, canvas.width, canvas.height);
-
-        let imageData = context.getImageData(0, 0, canvas.width, canvas.height);
-        imageData = Dithering.grayscale(imageData);
-
-        switch (ditheringMethod) {
-          case 'BITMAP':
-            imageData = Dithering.threshold(imageData, threshold * 2.55);
-            break;
-          case 'STRETCH':
-            {
-              const d = imageData.data;
-              const mid = threshold * 2.55;
-              for (let i = 0; i < d.length; i += 4) {
-                const y = d[i];
-                const v = y < mid ? (y * 255) / Math.max(1, mid) : 255 - ((255 - y) * 255) / Math.max(1, 255 - mid);
-                d[i] = d[i + 1] = d[i + 2] = clamp(v);
-                d[i + 3] = 255;
-              }
-              imageData = Dithering.threshold(imageData, mid);
+    imageRef.current.crossOrigin = 'Anonymous';
+    imageRef.current.src = imageSrc;
+    imageRef.current.onload = () => {
+      const img = imageRef.current;
+      canvas.width = img.width;
+      canvas.height = img.height;
+  
+      const scale = size / 100;
+      const lowWidth = Math.max(1, Math.floor(img.width * scale));
+      const lowHeight = Math.max(1, Math.floor(img.height * scale));
+      const lowCanvas = document.createElement('canvas');
+      lowCanvas.width = lowWidth;
+      lowCanvas.height = lowHeight;
+      const lowContext = lowCanvas.getContext('2d')!;
+  
+      lowContext.fillStyle = 'white';
+      lowContext.fillRect(0, 0, lowWidth, lowHeight);
+  
+      lowContext.imageSmoothingEnabled = false;
+      lowContext.drawImage(img, 0, 0, lowWidth, lowHeight);
+  
+      let imageData = lowContext.getImageData(0, 0, lowWidth, lowHeight);
+      imageData = Dithering.grayscale(imageData);
+  
+      switch (ditheringMethod) {
+        case 'BITMAP':
+          imageData = Dithering.threshold(imageData, threshold * 2.55);
+          break;
+        case 'STRETCH':
+          {
+            const d = imageData.data;
+            const mid = threshold * 2.55;
+            for (let i = 0; i < d.length; i += 4) {
+              const y = d[i];
+              const originalAlpha = d[i + 3];
+              const v = y < mid ? (y * 255) / Math.max(1, mid) : 255 - ((255 - y) * 255) / Math.max(1, 255 - mid);
+              d[i] = d[i + 1] = d[i + 2] = clamp(v);
+              d[i + 3] = originalAlpha;
             }
-            break;
-          case 'FLOYD-STEINBERG':
-            imageData = Dithering.floydSteinberg(imageData, canvas.width, canvas.height);
-            break;
-          case 'ATKINSON':
-            imageData = Dithering.atkinson(imageData, canvas.width, canvas.height);
-            break;
-          case 'JARVIS-JUDICE-NINKE':
-            imageData = Dithering.jjn(imageData, canvas.width, canvas.height);
-            break;
-          case 'STUCKI':
-            imageData = Dithering.stucki(imageData, canvas.width, canvas.height);
-            break;
-          case 'BAYER 2X2':
-            imageData = Dithering.bayer2(imageData, canvas.width, canvas.height);
-            break;
-          case 'BAYER 4X4':
-            imageData = Dithering.bayer4(imageData, canvas.width, canvas.height);
-            break;
-          case 'BAYER 8X8':
-            imageData = Dithering.bayer8(imageData, canvas.width, canvas.height);
-            break;
-          case 'CLUSTERED 4X4':
-            imageData = Dithering.clustered4x4(imageData, canvas.width, canvas.height);
-            break;
-          case 'RANDOM':
-            imageData = Dithering.random(imageData);
-            break;
-          default:
-            imageData = Dithering.threshold(imageData, threshold * 2.55);
-        }
-
-        context.putImageData(imageData, 0, 0);
-      };
-    }
+            imageData = Dithering.threshold(imageData, mid);
+          }
+          break;
+        case 'FLOYD-STEINBERG':
+          imageData = Dithering.floydSteinberg(imageData, lowWidth, lowHeight);
+          break;
+        case 'ATKINSON':
+          imageData = Dithering.atkinson(imageData, lowWidth, lowHeight);
+          break;
+        case 'JARVIS-JUDICE-NINKE':
+          imageData = Dithering.jjn(imageData, lowWidth, lowHeight);
+          break;
+        case 'STUCKI':
+          imageData = Dithering.stucki(imageData, lowWidth, lowHeight);
+          break;
+        case 'BAYER 2X2':
+          imageData = Dithering.bayer2(imageData, lowWidth, lowHeight);
+          break;
+        case 'BAYER 4X4':
+          imageData = Dithering.bayer4(imageData, lowWidth, lowHeight);
+          break;
+        case 'BAYER 8X8':
+          imageData = Dithering.bayer8(imageData, lowWidth, lowHeight);
+          break;
+        case 'CLUSTERED 4X4':
+          imageData = Dithering.clustered4x4(imageData, lowWidth, lowHeight);
+          break;
+        case 'RANDOM':
+          imageData = Dithering.random(imageData);
+          break;
+        default:
+          imageData = Dithering.threshold(imageData, threshold * 2.55);
+      }
+  
+      lowContext.putImageData(imageData, 0, 0);
+  
+      context.imageSmoothingEnabled = false;
+      context.drawImage(lowCanvas, 0, 0, canvas.width, canvas.height);
+    };
   }, [imageSrc, size, threshold, ditheringMethod]);
 
+  useEffect(() => {
+    const container = containerRef.current;
+    if (!container) return;
+
+    const handleWheel = (e: WheelEvent) => {
+      e.preventDefault();
+      const delta = e.deltaY > 0 ? 0.9 : 1.1;
+      setZoom(prev => {
+        const newZoom = Math.max(0.1, Math.min(5, prev * delta));
+        if (newZoom === 1) {
+          setPan({ x: 0, y: 0 });
+        }
+        return newZoom;
+      });
+    };
+
+    container.addEventListener('wheel', handleWheel, { passive: false });
+    return () => container.removeEventListener('wheel', handleWheel);
+  }, []);
+
   return (
-    <div className="min-h-screen bg-white text-black font-mono">
-      <div className="flex flex-row items-stretch gap-4 min-h-screen">
+    <div className="h-screen bg-white text-black font-mono overflow-hidden">
+      <div className="flex flex-row items-stretch gap-4 h-full">
         <div className="w-56 p-3 border border-black flex flex-col self-stretch shrink-0">
           <div className="mb-4">
             <div className="inline-block px-3 py-1 border border-black font-bold text-sm">BITMAP</div>
@@ -348,9 +386,32 @@ function App() {
           </div>
         </div>
 
-        <div className="flex-1 p-6 flex items-start justify-center">
+        <div 
+          ref={containerRef}
+          className="flex-1 p-6 flex items-start justify-center overflow-hidden"
+          onMouseDown={(e) => {
+            setIsDragging(true);
+            setDragStart({ x: e.clientX - pan.x, y: e.clientY - pan.y });
+          }}
+          onMouseMove={(e) => {
+            if (isDragging) {
+              setPan({ x: e.clientX - dragStart.x, y: e.clientY - dragStart.y });
+            }
+          }}
+          onMouseUp={() => setIsDragging(false)}
+          onMouseLeave={() => setIsDragging(false)}
+        >
           {imageSrc ? (
-            <canvas ref={canvasRef} className="max-w-full h-auto"></canvas>
+            <canvas 
+              ref={canvasRef} 
+              className="max-w-full h-auto"
+              style={{
+                transform: `translate(${pan.x}px, ${pan.y}px) scale(${zoom})`,
+                transformOrigin: 'center center',
+                willChange: 'transform',
+                imageRendering: 'pixelated'
+              }}
+            />
           ) : (
             <div className="w-full h-[70vh] border-2 border-dashed border-gray-400 flex items-center justify-center text-xs">
               <p>Upload an image to begin</p>
