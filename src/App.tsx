@@ -214,13 +214,17 @@ function App() {
   const [size, setSize] = useState<number>(46);
   const [threshold, setThreshold] = useState<number>(46);
   const [ditheringMethod, setDitheringMethod] = useState<string>('BITMAP');
+  const [showSplit, setShowSplit] = useState<boolean>(true);
+  const [splitPosition, setSplitPosition] = useState<number>(50);
   const [zoom, setZoom] = useState<number>(1);
   const [pan, setPan] = useState({ x: 0, y: 0 });
   const [isDragging, setIsDragging] = useState(false);
+  const [isSplitting, setIsSplitting] = useState(false);
   const [dragStart, setDragStart] = useState({ x: 0, y: 0 });
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
   const imageRef = useRef<HTMLImageElement>(new Image());
+  const afterLowCanvasRef = useRef<HTMLCanvasElement | null>(null);
 
   const handleImageUpload = (event: React.ChangeEvent<HTMLInputElement>) => {
     if (event.target.files && event.target.files[0]) {
@@ -237,6 +241,24 @@ function App() {
     }
   };
 
+  const handleExport = () => {
+    const afterLowCanvas = afterLowCanvasRef.current;
+    const canvas = canvasRef.current;
+    if (!afterLowCanvas || !canvas) return;
+
+    const exportCanvas = document.createElement('canvas');
+    exportCanvas.width = canvas.width;
+    exportCanvas.height = canvas.height;
+    const exportCtx = exportCanvas.getContext('2d')!;
+    exportCtx.imageSmoothingEnabled = false;
+    exportCtx.drawImage(afterLowCanvas, 0, 0, exportCanvas.width, exportCanvas.height);
+
+    const link = document.createElement('a');
+    link.download = 'dithered-image.png';
+    link.href = exportCanvas.toDataURL('image/png');
+    link.click();
+  };
+
   useEffect(() => {
     const canvas = canvasRef.current;
     const context = canvas?.getContext('2d');
@@ -248,31 +270,41 @@ function App() {
       const img = imageRef.current;
       canvas.width = img.width;
       canvas.height = img.height;
-  
+
+      // Create full-resolution "before" image (grayscale)
+      const beforeCanvas = document.createElement('canvas');
+      beforeCanvas.width = canvas.width;
+      beforeCanvas.height = canvas.height;
+      const beforeCtx = beforeCanvas.getContext('2d')!;
+      beforeCtx.fillStyle = 'white';
+      beforeCtx.fillRect(0, 0, canvas.width, canvas.height);
+      beforeCtx.drawImage(img, 0, 0);
+      let beforeImageData = beforeCtx.getImageData(0, 0, canvas.width, canvas.height);
+      beforeImageData = Dithering.grayscale(beforeImageData);
+      beforeCtx.putImageData(beforeImageData, 0, 0);
+
+      // Create low-resolution "after" image (dithered)
       const scale = size / 100;
       const lowWidth = Math.max(1, Math.floor(img.width * scale));
       const lowHeight = Math.max(1, Math.floor(img.height * scale));
-      const lowCanvas = document.createElement('canvas');
-      lowCanvas.width = lowWidth;
-      lowCanvas.height = lowHeight;
-      const lowContext = lowCanvas.getContext('2d')!;
-  
-      lowContext.fillStyle = 'white';
-      lowContext.fillRect(0, 0, lowWidth, lowHeight);
-  
-      lowContext.imageSmoothingEnabled = false;
-      lowContext.drawImage(img, 0, 0, lowWidth, lowHeight);
-  
-      let imageData = lowContext.getImageData(0, 0, lowWidth, lowHeight);
-      imageData = Dithering.grayscale(imageData);
-  
+      const afterLowCanvas = document.createElement('canvas');
+      afterLowCanvas.width = lowWidth;
+      afterLowCanvas.height = lowHeight;
+      const afterLowCtx = afterLowCanvas.getContext('2d')!;
+      afterLowCtx.fillStyle = 'white';
+      afterLowCtx.fillRect(0, 0, lowWidth, lowHeight);
+      afterLowCtx.imageSmoothingEnabled = false;
+      afterLowCtx.drawImage(img, 0, 0, lowWidth, lowHeight);
+      let afterImageData = afterLowCtx.getImageData(0, 0, lowWidth, lowHeight);
+      afterImageData = Dithering.grayscale(afterImageData);
+
       switch (ditheringMethod) {
         case 'BITMAP':
-          imageData = Dithering.threshold(imageData, threshold * 2.55);
+          Dithering.threshold(afterImageData, threshold * 2.55);
           break;
         case 'STRETCH':
           {
-            const d = imageData.data;
+            const d = afterImageData.data;
             const mid = threshold * 2.55;
             for (let i = 0; i < d.length; i += 4) {
               const y = d[i];
@@ -281,46 +313,93 @@ function App() {
               d[i] = d[i + 1] = d[i + 2] = clamp(v);
               d[i + 3] = originalAlpha;
             }
-            imageData = Dithering.threshold(imageData, mid);
+            Dithering.threshold(afterImageData, mid);
           }
           break;
         case 'FLOYD-STEINBERG':
-          imageData = Dithering.floydSteinberg(imageData, lowWidth, lowHeight);
+          Dithering.floydSteinberg(afterImageData, lowWidth, lowHeight);
           break;
         case 'ATKINSON':
-          imageData = Dithering.atkinson(imageData, lowWidth, lowHeight);
+          Dithering.atkinson(afterImageData, lowWidth, lowHeight);
           break;
         case 'JARVIS-JUDICE-NINKE':
-          imageData = Dithering.jjn(imageData, lowWidth, lowHeight);
+          Dithering.jjn(afterImageData, lowWidth, lowHeight);
           break;
         case 'STUCKI':
-          imageData = Dithering.stucki(imageData, lowWidth, lowHeight);
+          Dithering.stucki(afterImageData, lowWidth, lowHeight);
           break;
         case 'BAYER 2X2':
-          imageData = Dithering.bayer2(imageData, lowWidth, lowHeight);
+          Dithering.bayer2(afterImageData, lowWidth, lowHeight);
           break;
         case 'BAYER 4X4':
-          imageData = Dithering.bayer4(imageData, lowWidth, lowHeight);
+          Dithering.bayer4(afterImageData, lowWidth, lowHeight);
           break;
         case 'BAYER 8X8':
-          imageData = Dithering.bayer8(imageData, lowWidth, lowHeight);
+          Dithering.bayer8(afterImageData, lowWidth, lowHeight);
           break;
         case 'CLUSTERED 4X4':
-          imageData = Dithering.clustered4x4(imageData, lowWidth, lowHeight);
+          Dithering.clustered4x4(afterImageData, lowWidth, lowHeight);
           break;
         case 'RANDOM':
-          imageData = Dithering.random(imageData);
+          Dithering.random(afterImageData);
           break;
         default:
-          imageData = Dithering.threshold(imageData, threshold * 2.55);
+          Dithering.threshold(afterImageData, threshold * 2.55);
       }
-  
-      lowContext.putImageData(imageData, 0, 0);
-  
+
+      afterLowCtx.putImageData(afterImageData, 0, 0);
+      afterLowCanvasRef.current = afterLowCanvas;
+
+      // Render to main canvas
       context.imageSmoothingEnabled = false;
-      context.drawImage(lowCanvas, 0, 0, canvas.width, canvas.height);
+      context.clearRect(0, 0, canvas.width, canvas.height);
+
+      if (showSplit) {
+        const splitX = canvas.width * (splitPosition / 100);
+
+        if (splitX > 0) {
+          const sourceWidth = afterLowCanvas.width * (splitPosition / 100);
+          context.drawImage(afterLowCanvas, 0, 0, sourceWidth, afterLowCanvas.height, 0, 0, splitX, canvas.height);
+        }
+
+        if (splitX < canvas.width) {
+          const sourceX = beforeCanvas.width * (splitPosition / 100);
+          const sourceWidth = beforeCanvas.width - sourceX;
+          const destWidth = canvas.width - splitX;
+          context.drawImage(beforeCanvas, sourceX, 0, sourceWidth, beforeCanvas.height, splitX, 0, destWidth, canvas.height);
+        }
+
+        context.fillStyle = 'black';
+        context.fillRect(splitX - 0.5, 0, 1, canvas.height);
+
+        const handleHeight = 30;
+        const handleWidth = 16;
+        const handleY = canvas.height / 2 - handleHeight / 2;
+
+        context.fillStyle = 'white';
+        context.fillRect(splitX - handleWidth / 2, handleY, handleWidth, handleHeight);
+        context.strokeStyle = 'black';
+        context.lineWidth = 1;
+        context.strokeRect(splitX - handleWidth / 2, handleY, handleWidth, handleHeight);
+
+        context.fillStyle = 'black';
+        context.beginPath();
+        context.moveTo(splitX - 2, canvas.height / 2);
+        context.lineTo(splitX - 6, canvas.height / 2 - 4);
+        context.lineTo(splitX - 6, canvas.height / 2 + 4);
+        context.closePath();
+        context.fill();
+        context.beginPath();
+        context.moveTo(splitX + 2, canvas.height / 2);
+        context.lineTo(splitX + 6, canvas.height / 2 - 4);
+        context.lineTo(splitX + 6, canvas.height / 2 + 4);
+        context.closePath();
+        context.fill();
+      } else {
+        context.drawImage(afterLowCanvas, 0, 0, canvas.width, canvas.height);
+      }
     };
-  }, [imageSrc, size, threshold, ditheringMethod]);
+  }, [imageSrc, size, threshold, ditheringMethod, splitPosition, showSplit]);
 
   useEffect(() => {
     const container = containerRef.current;
@@ -384,22 +463,63 @@ function App() {
               </select>
             </div>
           </div>
+
+          <div className="mt-4">
+            <label htmlFor="show-split" className="flex items-center gap-2 text-xs cursor-pointer select-none">
+              <input 
+                id="show-split" 
+                type="checkbox" 
+                checked={showSplit} 
+                onChange={(e) => setShowSplit(e.target.checked)}
+                className="sr-only peer" 
+              />
+              <div className="w-3 h-3 border border-black bg-white peer-checked:bg-black"></div>
+              <span>Show Before/After</span>
+            </label>
+          </div>
+
+          <div className="mt-auto pt-4">
+            <button onClick={handleExport} className="w-full select-none border border-black bg-black text-white text-xs px-3 py-1">EXPORT</button>
+          </div>
         </div>
 
         <div 
           ref={containerRef}
-          className="flex-1 p-6 flex items-start justify-center overflow-hidden"
+          className="relative flex-1 p-6 flex items-start justify-center overflow-hidden"
           onMouseDown={(e) => {
-            setIsDragging(true);
-            setDragStart({ x: e.clientX - pan.x, y: e.clientY - pan.y });
+            const canvas = canvasRef.current;
+            if (!canvas) return;
+            const rect = canvas.getBoundingClientRect();
+            const x = e.clientX - rect.left;
+            const lineX = rect.width * (splitPosition / 100);
+
+            if (showSplit && Math.abs(x - lineX) < 10) {
+              setIsSplitting(true);
+            } else {
+              setIsDragging(true);
+              setDragStart({ x: e.clientX - pan.x, y: e.clientY - pan.y });
+            }
           }}
           onMouseMove={(e) => {
-            if (isDragging) {
+            if (isSplitting) {
+              const canvas = canvasRef.current;
+              if (!canvas) return;
+              const rect = canvas.getBoundingClientRect();
+              const x = e.clientX - rect.left;
+              const percent = (x / rect.width) * 100;
+              setSplitPosition(Math.max(0, Math.min(100, percent)));
+            } else if (isDragging) {
               setPan({ x: e.clientX - dragStart.x, y: e.clientY - dragStart.y });
             }
           }}
-          onMouseUp={() => setIsDragging(false)}
-          onMouseLeave={() => setIsDragging(false)}
+          onMouseUp={() => {
+            setIsDragging(false);
+            setIsSplitting(false);
+          }}
+          onMouseLeave={() => {
+            setIsDragging(false);
+            setIsSplitting(false);
+          }}
         >
           {imageSrc ? (
             <canvas 
@@ -409,7 +529,8 @@ function App() {
                 transform: `translate(${pan.x}px, ${pan.y}px) scale(${zoom})`,
                 transformOrigin: 'center center',
                 willChange: 'transform',
-                imageRendering: 'pixelated'
+                imageRendering: 'pixelated',
+                cursor: isSplitting ? 'ew-resize' : 'grab'
               }}
             />
           ) : (
