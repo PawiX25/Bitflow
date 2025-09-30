@@ -209,6 +209,8 @@ const DITHERING_METHODS = [
   'RANDOM',
 ];
 
+type AnimationType = 'none' | 'glitch' | 'scanline' | 'pulse' | 'matrix';
+
 function App() {
   const [imageSrc, setImageSrc] = useState<string | null>(null);
   const [size, setSize] = useState<number>(46);
@@ -221,10 +223,15 @@ function App() {
   const [isDragging, setIsDragging] = useState(false);
   const [isSplitting, setIsSplitting] = useState(false);
   const [dragStart, setDragStart] = useState({ x: 0, y: 0 });
+  const [animation, setAnimation] = useState<AnimationType>('none');
+  const [animationIntensity, setAnimationIntensity] = useState<number>(50);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
   const imageRef = useRef<HTMLImageElement>(new Image());
   const afterLowCanvasRef = useRef<HTMLCanvasElement | null>(null);
+  const animationFrameRef = useRef<number | null>(null);
+  const overlayCanvasRef = useRef<HTMLCanvasElement>(null);
+  const animationStartTimeRef = useRef<number>(Date.now());
 
   const handleImageUpload = (event: React.ChangeEvent<HTMLInputElement>) => {
     if (event.target.files && event.target.files[0]) {
@@ -271,7 +278,6 @@ function App() {
       canvas.width = img.width;
       canvas.height = img.height;
 
-      // Create full-resolution "before" image (grayscale)
       const beforeCanvas = document.createElement('canvas');
       beforeCanvas.width = canvas.width;
       beforeCanvas.height = canvas.height;
@@ -283,7 +289,6 @@ function App() {
       beforeImageData = Dithering.grayscale(beforeImageData);
       beforeCtx.putImageData(beforeImageData, 0, 0);
 
-      // Create low-resolution "after" image (dithered)
       const scale = size / 100;
       const lowWidth = Math.max(1, Math.floor(img.width * scale));
       const lowHeight = Math.max(1, Math.floor(img.height * scale));
@@ -350,7 +355,6 @@ function App() {
       afterLowCtx.putImageData(afterImageData, 0, 0);
       afterLowCanvasRef.current = afterLowCanvas;
 
-      // Render to main canvas
       context.imageSmoothingEnabled = false;
       context.clearRect(0, 0, canvas.width, canvas.height);
 
@@ -402,6 +406,150 @@ function App() {
   }, [imageSrc, size, threshold, ditheringMethod, splitPosition, showSplit]);
 
   useEffect(() => {
+    animationStartTimeRef.current = Date.now();
+  }, [animation]);
+
+  useEffect(() => {
+    if (animation === 'none') {
+      if (animationFrameRef.current) {
+        cancelAnimationFrame(animationFrameRef.current);
+        animationFrameRef.current = null;
+      }
+      return;
+    }
+
+    const canvas = canvasRef.current;
+    const overlay = overlayCanvasRef.current;
+    if (!canvas || !overlay) return;
+
+    overlay.width = canvas.width;
+    overlay.height = canvas.height;
+    const ctx = overlay.getContext('2d');
+    if (!ctx) return;
+
+    const intensity = animationIntensity / 100;
+
+    const animate = () => {
+      const elapsed = (Date.now() - animationStartTimeRef.current) / 1000;
+      ctx.clearRect(0, 0, overlay.width, overlay.height);
+
+      if (showSplit) {
+        const splitX = overlay.width * (splitPosition / 100);
+        ctx.save();
+        ctx.beginPath();
+        ctx.rect(0, 0, splitX, overlay.height);
+        ctx.clip();
+      }
+
+      switch (animation) {
+        case 'glitch': {
+          if (Math.random() < 0.1 * intensity) {
+            const sliceHeight = Math.random() * 20 + 5;
+            const y = Math.random() * overlay.height;
+            const offset = (Math.random() - 0.5) * 20 * intensity;
+            ctx.fillStyle = Math.random() > 0.5 ? 'rgba(255,0,0,0.3)' : 'rgba(0,255,255,0.3)';
+            ctx.fillRect(offset, y, overlay.width, sliceHeight);
+          }
+          break;
+        }
+
+        case 'scanline': {
+          const lineSpeed = 100 * intensity;
+          const scanY = (elapsed * lineSpeed) % (overlay.height + 50);
+          ctx.fillStyle = 'rgba(255,255,255,0.1)';
+          for (let i = 0; i < overlay.height; i += 4) {
+            ctx.fillRect(0, i, overlay.width, 2);
+          }
+          ctx.fillStyle = 'rgba(255,255,255,0.3)';
+          ctx.fillRect(0, scanY - 25, overlay.width, 50);
+          break;
+        }
+
+        case 'pulse': {
+          const afterLowCanvas = afterLowCanvasRef.current;
+          if (afterLowCanvas) {
+            ctx.save();
+            ctx.imageSmoothingEnabled = false;
+            const scale = 1 + Math.sin(elapsed * 2 * intensity) * 0.02 * intensity;
+            ctx.translate(overlay.width / 2, overlay.height / 2);
+            ctx.scale(scale, scale);
+            ctx.translate(-overlay.width / 2, -overlay.height / 2);
+            ctx.drawImage(
+              afterLowCanvas,
+              0, 0, afterLowCanvas.width, afterLowCanvas.height,
+              0, 0, overlay.width, overlay.height
+            );
+            ctx.restore();
+          }
+          break;
+        }
+
+        case 'matrix': {
+          const chars = '01';
+          ctx.fillStyle = 'rgba(0,0,0,0.05)';
+          ctx.fillRect(0, 0, overlay.width, overlay.height);
+          ctx.fillStyle = '#00ff00';
+          ctx.font = '12px monospace';
+          const changeInterval = 0.15;
+          const changeTime = Math.floor(elapsed / changeInterval);
+          for (let i = 0; i < overlay.width; i += 20) {
+            const seed = changeTime + i;
+            const charIndex = Math.floor(Math.sin(seed * 12.9898) * 43758.5453) % 2;
+            const char = chars[Math.abs(charIndex)];
+            const y = (elapsed * 100 * intensity + i * 20) % overlay.height;
+            ctx.fillText(char, i, y);
+          }
+          break;
+        }
+      }
+
+      if (showSplit) {
+        ctx.restore();
+
+        const splitX = overlay.width * (splitPosition / 100);
+
+        ctx.fillStyle = 'black';
+        ctx.fillRect(splitX - 0.5, 0, 1, overlay.height);
+
+        const handleHeight = 30;
+        const handleWidth = 16;
+        const handleY = overlay.height / 2 - handleHeight / 2;
+        
+        ctx.fillStyle = 'white';
+        ctx.fillRect(splitX - handleWidth / 2, handleY, handleWidth, handleHeight);
+        ctx.strokeStyle = 'black';
+        ctx.lineWidth = 1;
+        ctx.strokeRect(splitX - handleWidth / 2, handleY, handleWidth, handleHeight);
+
+        ctx.fillStyle = 'black';
+        ctx.beginPath();
+        ctx.moveTo(splitX - 2, overlay.height / 2);
+        ctx.lineTo(splitX - 6, overlay.height / 2 - 4);
+        ctx.lineTo(splitX - 6, overlay.height / 2 + 4);
+        ctx.closePath();
+        ctx.fill();
+        ctx.beginPath();
+        ctx.moveTo(splitX + 2, overlay.height / 2);
+        ctx.lineTo(splitX + 6, overlay.height / 2 - 4);
+        ctx.lineTo(splitX + 6, overlay.height / 2 + 4);
+        ctx.closePath();
+        ctx.fill();
+      }
+
+      animationFrameRef.current = requestAnimationFrame(animate);
+    };
+
+    animate();
+
+    return () => {
+      if (animationFrameRef.current) {
+        cancelAnimationFrame(animationFrameRef.current);
+        animationFrameRef.current = null;
+      }
+    };
+  }, [animation, animationIntensity, showSplit, splitPosition]);
+
+  useEffect(() => {
     const container = containerRef.current;
     if (!container) return;
 
@@ -426,7 +574,15 @@ function App() {
       <div className="flex flex-row items-stretch gap-4 h-full">
         <div className="w-56 p-3 border border-black flex flex-col self-stretch shrink-0">
           <div className="mb-4">
-            <div className="inline-block px-3 py-1 border border-black font-bold text-sm">BITMAP</div>
+            <div className="flex flex-col items-start">
+              <div className="relative">
+                <div className="font-bold text-lg tracking-wider">
+                  <span className="inline-block border border-black px-2 py-1 bg-black text-white">BIT</span>
+                  <span className="inline-block border border-black border-l-0 px-2 py-1 bg-white text-black">FLOW</span>
+                </div>
+              </div>
+              <div className="w-full border-t border-black mt-3 mb-1"></div>
+            </div>
           </div>
 
           <div className="mt-6">
@@ -478,6 +634,42 @@ function App() {
             </label>
           </div>
 
+          <div className="mt-4">
+            <label htmlFor="animation" className="block text-xs">ANIMATION:</label>
+            <div className="relative mt-1">
+              <select 
+                id="animation" 
+                value={animation} 
+                onChange={(e) => setAnimation(e.target.value as AnimationType)} 
+                className="w-full border border-black bg-white text-xs px-2 py-1 focus:outline-none"
+              >
+                <option value="none">NONE</option>
+                <option value="glitch">GLITCH</option>
+                <option value="scanline">SCANLINE</option>
+                <option value="pulse">PULSE</option>
+                <option value="matrix">MATRIX</option>
+              </select>
+            </div>
+          </div>
+
+          {animation !== 'none' && (
+            <div className="mt-4">
+              <label htmlFor="intensity" className="block text-xs">INTENSITY:</label>
+              <div className="flex items-center gap-2">
+                <input 
+                  id="intensity" 
+                  type="range" 
+                  min="1" 
+                  max="100" 
+                  value={animationIntensity} 
+                  onChange={(e) => setAnimationIntensity(Number(e.target.value))} 
+                  className="range" 
+                />
+                <span className="text-xs w-8 text-right">{animationIntensity}</span>
+              </div>
+            </div>
+          )}
+
           <div className="mt-auto pt-4">
             <button onClick={handleExport} className="w-full select-none border border-black bg-black text-white text-xs px-3 py-1">EXPORT</button>
           </div>
@@ -522,17 +714,30 @@ function App() {
           }}
         >
           {imageSrc ? (
-            <canvas 
-              ref={canvasRef} 
-              className="max-w-full h-auto"
-              style={{
-                transform: `translate(${pan.x}px, ${pan.y}px) scale(${zoom})`,
-                transformOrigin: 'center center',
-                willChange: 'transform',
-                imageRendering: 'pixelated',
-                cursor: isSplitting ? 'ew-resize' : 'grab'
-              }}
-            />
+            <div className="relative">
+              <canvas 
+                ref={canvasRef} 
+                className="max-w-full h-auto"
+                style={{
+                  transform: `translate(${pan.x}px, ${pan.y}px) scale(${zoom})`,
+                  transformOrigin: 'center center',
+                  willChange: 'transform',
+                  imageRendering: 'pixelated',
+                  cursor: isSplitting ? 'ew-resize' : 'grab'
+                }}
+              />
+              <canvas 
+                ref={overlayCanvasRef}
+                className="absolute top-0 left-0 max-w-full h-auto pointer-events-none"
+                style={{
+                  transform: `translate(${pan.x}px, ${pan.y}px) scale(${zoom})`,
+                  transformOrigin: 'center center',
+                  willChange: 'transform',
+                  imageRendering: 'pixelated',
+                  mixBlendMode: animation === 'matrix' ? 'screen' : 'normal'
+                }}
+              />
+            </div>
           ) : (
             <div className="w-full h-[70vh] border-2 border-dashed border-gray-400 flex items-center justify-center text-xs">
               <p>Upload an image to begin</p>
